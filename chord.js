@@ -2,39 +2,26 @@ var net = require('net');
 var url = require('url');
 var crypto = require('crypto');
 var http = require('http');
-
-// Helper functions
-var serialize = function serialize(message) {
-    return new Buffer(JSON.stringify(message));
-};
-
-var deserialize = JSON.parse;
-
-var isJSONRequest = function (request) {
-    return request.headers.accept && request.headers.accept.indexOf("application/json") > -1;
-}
-
-var randomInt = function (low, high) {
-    return Math.floor(Math.random() * (high - low) + low);
-}
-
+var misc = require('./chordmisc.js');
 
 // Node should have a successor Assumption: At least *one* node is
 // reliable and always online.
 //
 // Basic ChordNode is implemented referencing Wikipedia
 // http://en.wikipedia.org/wiki/Chord_%28peer-to-peer%29#Pseudocode
-function ChordNode (ip, port) {
+var ChordNode = function (ip, port) {
 
     // Initialize node properties
     var shasum = crypto.createHash('sha1');
-    var id = shasum.update(ip + port).digest("hex");
+    var id = port % 10;//shasum.update(ip + port).digest("hex");
+    // Simple datastructure that holds the state of the node
     this.options = {
 	id: id,
 	ip: ip,
 	port: port,
 
 	predecessor: {},
+	
 	successor: {
 	    ip: ip,
 	    port: port,
@@ -45,17 +32,32 @@ function ChordNode (ip, port) {
     var self = this;
 
     // Every node has a http Server This server will serve JSON for
-    // other peers and standard html for browsers
+    // other nodes and standard html for browsers
     this.server = http.createServer();
-    
+
+    // Updating the node means making the server consistent with the
+    // state of the node
     this.updateNode = function(server) {
 	server.on('request', function (request, response) {
+	    
+	    var JSONString = misc.serialize(self.options);
 
-	    var JSONString = JSON.stringify(self.options);
+	    if (misc.isJSONRequest(request)) {
+		if(misc.isNotifyQuery(request)) {
+		    var queryString = url.parse(request.url, true);
+		    var queryId = queryString.query.id;
+		    var queryIp = queryString.query.ip;
+		    var queryPort = queryString.query.port;
+		    if (misc.isEmpty(self.options.predecessor) ||
+			(self.options.predecessor.id < queryId && queryId < self.options)) {
 
-	    if (isJSONRequest(request)) {
+			self.options.predecessor = {id: queryId, ip: queryIp, port: queryPort};
+			self.updateNode(self.server);
+		    }
+		}
+		    
 		response.writeHead(200, {
-		'Content-Type': 'application/json'});
+		    'Content-Type': 'application/json'});
 		response.write(JSONString);
 		response.end();
 
@@ -63,27 +65,28 @@ function ChordNode (ip, port) {
 		response.writeHead(200, { 'Content-Type': "text/html" });
 		
 		var buffer = "<html><body>";
-		buffer += "<a href=http://" + self.options.successor.ip + ":" + self.options.successor.port + "> &lt;&lt;  " + self.options.successor.id + "</a>";
+		buffer += "<a href=http://" + self.options.successor.ip + ":" + self.options.successor.port + "> &lt;&lt;  " + self.options.successor.port + " - "  + self.options.successor.id + "</a>";
 		buffer += "<br><br>";
 		buffer += JSONString;
 		buffer += "<br><br>";
-		buffer += "<a href=http://" + self.options.predecessor.ip + ":" + self.options.predecessor.port + ">  " + self.options.predecessor.id + " &gt;&gt; </a>";
+		buffer += "<a href=http://" + self.options.predecessor.ip + ":" + self.options.predecessor.port + ">  " + self.options.predecessor.port + " - "  + self.options.predecessor.id + " &gt;&gt; </a>";
 		buffer += "</body></html>";
 		response.write(buffer);
 		response.end();
-	    }});
+	    }
+	});
     }
 
     // Join: find the successor
     this.join = function (node) {
-	self.findSuccessor (node, function (suc) {
+	
+	findSuccessor (node, function (suc) {
 	    self.options.successor = suc;
 	    self.updateNode(self.server);
 	});
     }
 
-    this.findSuccessor = function (node, callback) {
-
+    var findSuccessor = function (node, callback) {
 	options = {
 	    hostname: node.ip,
 	    port: node.port,
@@ -92,65 +95,97 @@ function ChordNode (ip, port) {
 	    }
 	}
 	
-	var req = http.request(options, function(res) {
-	    console.log('STATUS: ' + res.statusCode);
-	    console.log('HEADERS: ' + JSON.stringify(res.headers));
-	    
-	    res.setEncoding('utf8');
-	    res.on('data', function (chunk) {
-		var JSONResponse = deserialize(chunk);
+	var request = http.request(options, function(response) {
+	    response.setEncoding('utf8');
+	    response.on('data', function (chunk) {
+
+		var JSONResponse = misc.deserialize(chunk);
 
 		var nodeId = JSONResponse.id;
 		var successorNode = JSONResponse.successor;
 		var successorId = successorNode.id;
-		if (Object.keys(JSONResponse.predecessor).length === 0) {
-		    callback(successorNode);
-		    return;
-		}
-		var predecessorNode = JSONResponse.predecessor;
-		if (id < nodeId && id <= successorId) {
-		    callback(successorNode);
+
+		console.log("inHalfOpenRange - self: " + self.options.id +", low: " + nodeId + ", high: "+ successorId); 
+		if (misc.inHalfOpenRange(self.options.id, nodeId, successorId)) {
+		    callback (successorNode);
 		} else {
-		    return self.findSuccessor(predecessorNode);
+		    console.log(successorNode);
+		    return findSuccessor(successorNode, callback);
 		}
 	    });
 	});
 
-	req.write("");
-	req.end();
+	request.write("");
+	request.end();
     }
 
+    // called periodically. n asks the successor
+    // about its predecessor, verifies if n's immediate
+    // successor is consistent, and tells the successor about n
+    this.stabilize = function () {
+	if (self.options.successor.id == self.options.id
+	    && misc.isEmpty(self.options.predecessor)) {
+	    return;
+	}
+	var options = {
+	    hostname: self.options.successor.ip,
+	    port: self.options.successor.port,
+	    headers: {
+		'Accept': 'application/json'
+	    }
+	}
+	var request = http.request(options, function(response) {
+	    response.setEncoding('utf8');
+	    response.on('data', function (chunk) {
+		var JSONResponse = misc.deserialize(chunk);
+		var nodeId = JSONResponse.id;
+		var predecessorNode = JSONResponse.predecessor;
+		var successorNode = JSONResponse.successor;
+
+		if (misc.inRange(predecessorNode.id, self.options.id, nodeId)) {
+		    self.options.successor = predecessorNode;
+		    self.updateNode(self.server);
+		}
+		notify(self.options.successor);
+	    });
+	});
+
+	request.write("");
+	request.end();
+    }
+
+    var notify = function (nodecall) {
+	var options = {
+	    hostname: self.options.successor.ip,
+	    port: self.options.successor.port,
+	    headers: {
+		'Accept': 'application/json'
+	    },
+	    path: '/notify?id=' + self.options.id + "&ip=" + self.options.ip + "&port=" + self.options.port
+	}
+
+	var request = http.request(options);
+
+	request.write('');
+	request.end();
+    }
+
+    this.timer = function () {
+    	setTimeout(function() {
+    	    console.log("Stabilizing");
+    	    self.stabilize();
+    	    self.timer();
+    	}, 10000);
+    }
+
+    this.timer();
+    
     this.updateNode(self.server);
     self.server.listen(port);
+
 }
 
-
-// Test Suite
-var node1 = new ChordNode("127.0.0.1", 8080);
-var node2 = new ChordNode("127.0.0.1", 8081);
-var node3 = new ChordNode("127.0.0.1", 8082);
-var node4 = new ChordNode("127.0.0.1", 8083);
-node2.join({ip: "127.0.0.1", port: 8080});
-node3.join({ip: "127.0.0.1", port: 8080});
-node4.join({ip: "127.0.0.1", port: 8080});
-
-
-
-console.log("Node with id: " + node1.options.id + " has been launched\n");
-console.log("Node with id: " + node2.options.id + " has been launched\n");
-
-// Interactive Part
-// Platform for launching peers
-// process.stdin.setEncoding('utf8');
-// console.log("Add random note by hitting ENTER...\n");
-// console.log("Connect to specific node by writing port");
-
-// process.stdin.on('data', function(data) {
-//     var parts = data.split(' ');
-//     var port = parseInt(parts[0]) || randomInt(8000, 15000);
-//     var node = new ChordNode("127.0.0.1", port);
-//     console.log("Node with port: " + node.port + " has been launched\n");
-// });
+module.exports = ChordNode;
 
 
 
