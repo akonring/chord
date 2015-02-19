@@ -11,6 +11,11 @@ var port = parseInt(process.argv[2]) || misc.randomInt(8000, 15000);
 var node = new ChordNode("127.0.0.1", port);
 console.log("Node with port: " + port + " has been launched\n");
 
+// USAGE::
+// example::
+// node chord-ring.js 8080
+// join 127.0.0.1 8081
+
 process.stdin.on('data', function(data) {
     data = data.replace('\n', '').replace('\r', '');
     var parts = data.split(' ');

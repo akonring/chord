@@ -13,7 +13,10 @@ var ChordNode = function (ip, port) {
 
     // Initialize node properties
     var shasum = crypto.createHash('sha1');
-    var id = port % 10;//shasum.update(ip + port).digest("hex");
+
+    // id for testing purpose but should be SHA-1
+    var id = port % 10; //shasum.update(ip + port).digest("hex");
+
     // Simple datastructure that holds the state of the node
     this.options = {
 	id: id,
@@ -36,12 +39,14 @@ var ChordNode = function (ip, port) {
     this.server = http.createServer();
 
     // Updating the node means making the server consistent with the
-    // state of the node
+    // state of the node object
     this.updateNode = function(server) {
 	server.on('request', function (request, response) {
 	    
 	    var JSONString = misc.serialize(self.options);
 
+	    // Checks for 'accept' = 'application/json' - header
+	    // to distinguish other peers from browsers
 	    if (misc.isJSONRequest(request)) {
 		if(misc.isNotifyQuery(request)) {
 		    var queryString = url.parse(request.url, true);
@@ -62,6 +67,8 @@ var ChordNode = function (ip, port) {
 		response.end();
 
 	    } else {
+
+		// For browsers serves simple html for browsing the Chord Ring
 		response.writeHead(200, { 'Content-Type': "text/html" });
 		
 		var buffer = "<html><body>";
@@ -77,7 +84,8 @@ var ChordNode = function (ip, port) {
 	});
     }
 
-    // Join: find the successor
+
+    // Find successor and update the nodes server
     this.join = function (node) {
 	
 	findSuccessor (node, function (suc) {
@@ -86,6 +94,9 @@ var ChordNode = function (ip, port) {
 	});
     }
 
+
+    // Find successor as described in [Karger et al.]
+    // RPC's are simulated with HTTP request
     var findSuccessor = function (node, callback) {
 	options = {
 	    hostname: node.ip,
@@ -119,9 +130,11 @@ var ChordNode = function (ip, port) {
 	request.end();
     }
 
-    // called periodically. n asks the successor
+    // From Wikipedia Chord:
+    // "called periodically. n asks the successor
     // about its predecessor, verifies if n's immediate
-    // successor is consistent, and tells the successor about n
+    // successor is consistent, and tells the successor about n"
+    
     this.stabilize = function () {
 	if (self.options.successor.id == self.options.id
 	    && misc.isEmpty(self.options.predecessor)) {
@@ -170,6 +183,8 @@ var ChordNode = function (ip, port) {
 	request.end();
     }
 
+
+    // Periodically run stabilizing
     this.timer = function () {
     	setTimeout(function() {
     	    console.log("Stabilizing");
@@ -179,7 +194,8 @@ var ChordNode = function (ip, port) {
     }
 
     this.timer();
-    
+
+    // Update node and initializa server
     this.updateNode(self.server);
     self.server.listen(port);
 

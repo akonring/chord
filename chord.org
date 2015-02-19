@@ -1,9 +1,9 @@
-* Next Steps
-  - create abstraction to the remote procedure calls
-    - GET_SUCCESSOR()
-    - GET_PREDECESSOR()
-    - GET_ID()
-    - JOIN(n)
+* chord basic implementation [4/5] 
+ * [X] notify
+ * [X] stabilize
+ * [X] find successor
+ * [X] join
+ * [ ] leave
 
-    - UPDATE_OTHERS
+* TODO finger tables [/]
 
